@@ -3,6 +3,17 @@ set -euo pipefail
 
 fleet_root="${CCUSAGE_FLEET_ROOT:-$HOME/Library/Application Support/ccusage-fleet}"
 machine_id=""
+ccusage_bin="${CCUSAGE_BIN:-ccusage}"
+
+if ! command -v "$ccusage_bin" >/dev/null 2>&1; then
+  if [[ -x "$HOME/.cargo/bin/ccusage" ]]; then
+    ccusage_bin="$HOME/.cargo/bin/ccusage"
+  else
+    print -u2 "ccusage was not found."
+    print -u2 "Run ops/macos/install-ccusage.zsh, then open a new terminal or set CCUSAGE_BIN=/path/to/ccusage."
+    exit 127
+  fi
+fi
 
 if [[ "${1:-}" == "--machine" ]]; then
   if [[ -z "${2:-}" ]]; then
@@ -38,4 +49,4 @@ if [[ ${#homes[@]} -eq 0 ]]; then
 fi
 
 codex_home="${(j:,:)homes}"
-CODEX_HOME="$codex_home" ccusage codex "$@"
+CODEX_HOME="$codex_home" "$ccusage_bin" codex "$@"
