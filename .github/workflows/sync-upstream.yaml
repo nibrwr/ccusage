@@ -1,0 +1,112 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: '17 7 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_repository:
+        description: Repository to sync from
+        default: ryoppippi/ccusage
+        required: true
+      upstream_branch:
+        description: Branch to sync from
+        default: main
+        required: true
+      target_branch:
+        description: Branch to update in this fork
+        default: main
+        required: true
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  sync:
+    name: Merge upstream changes
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Configure sync inputs
+        id: config
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_UPSTREAM_REPOSITORY: ${{ inputs.upstream_repository }}
+          INPUT_UPSTREAM_BRANCH: ${{ inputs.upstream_branch }}
+          INPUT_TARGET_BRANCH: ${{ inputs.target_branch }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            upstream_repository="$INPUT_UPSTREAM_REPOSITORY"
+            upstream_branch="$INPUT_UPSTREAM_BRANCH"
+            target_branch="$INPUT_TARGET_BRANCH"
+          else
+            upstream_repository="ryoppippi/ccusage"
+            upstream_branch="main"
+            target_branch="${GITHUB_REF_NAME:-main}"
+          fi
+
+          {
+            echo "upstream_repository=$upstream_repository"
+            echo "upstream_branch=$upstream_branch"
+            echo "target_branch=$target_branch"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Merge upstream branch
+        id: merge
+        env:
+          UPSTREAM_REPOSITORY: ${{ steps.config.outputs.upstream_repository }}
+          UPSTREAM_BRANCH: ${{ steps.config.outputs.upstream_branch }}
+          TARGET_BRANCH: ${{ steps.config.outputs.target_branch }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream "https://github.com/$UPSTREAM_REPOSITORY.git"
+          git fetch origin "$TARGET_BRANCH"
+          git fetch upstream "$UPSTREAM_BRANCH"
+          git checkout -B "$TARGET_BRANCH" "origin/$TARGET_BRANCH"
+
+          if git merge --no-edit --no-ff "upstream/$UPSTREAM_BRANCH"; then
+            if git diff --quiet "origin/$TARGET_BRANCH" "$TARGET_BRANCH"; then
+              echo "No upstream changes to sync."
+              echo "merged=false" >> "$GITHUB_OUTPUT"
+            else
+              git push origin "$TARGET_BRANCH"
+              echo "merged=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Report merge conflict
+        if: failure() && steps.merge.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_REPOSITORY: ${{ steps.config.outputs.upstream_repository }}
+          UPSTREAM_BRANCH: ${{ steps.config.outputs.upstream_branch }}
+          TARGET_BRANCH: ${{ steps.config.outputs.target_branch }}
+        run: |
+          title="Sync upstream failed: $UPSTREAM_REPOSITORY@$UPSTREAM_BRANCH"
+          body="$(printf '%s\n' \
+            "Automatic upstream sync could not merge \`$UPSTREAM_REPOSITORY:$UPSTREAM_BRANCH\` into \`$TARGET_BRANCH\`." \
+            "" \
+            "Resolve locally with:" \
+            "\`\`\`sh" \
+            "git fetch upstream $UPSTREAM_BRANCH" \
+            "git checkout $TARGET_BRANCH" \
+            "git merge upstream/$UPSTREAM_BRANCH" \
+            "\`\`\`" \
+            "" \
+            "Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID")"
+
+          issue_number="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "$issue_number" ]; then
+            printf '%s\n' "$body" | gh issue comment "$issue_number" --body-file -
+          else
+            printf '%s\n' "$body" | gh issue create --title "$title" --body-file -
+          fi
