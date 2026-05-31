@@ -90,6 +90,13 @@ ops/macos/report-codex-fleet.zsh daily
 ops/macos/report-codex-fleet.zsh session
 ```
 
+Usage broken out by Mac:
+
+```sh
+ops/macos/report-codex-fleet-by-machine.zsh monthly
+ops/macos/report-codex-fleet-by-machine.zsh daily --since 2026-05-01
+```
+
 Individual Mac usage:
 
 ```sh
