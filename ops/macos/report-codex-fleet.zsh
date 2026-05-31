@@ -39,4 +39,3 @@ fi
 
 codex_home="${(j:,:)homes}"
 CODEX_HOME="$codex_home" ccusage codex "$@"
-

@@ -42,4 +42,3 @@ launchctl load "$plist"
 print "Installed launchd exporter for $machine_id"
 print "Fleet root: $fleet_root"
 print "Interval: ${interval}s"
-

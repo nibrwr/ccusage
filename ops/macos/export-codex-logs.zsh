@@ -30,4 +30,3 @@ if [[ -f "$codex_home/config.toml" ]]; then
 fi
 
 print "Exported Codex logs for $machine_id to $dest"
-
