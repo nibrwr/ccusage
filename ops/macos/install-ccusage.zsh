@@ -3,6 +3,8 @@ set -euo pipefail
 
 repo_url="${CCUSAGE_REPO_URL:-https://github.com/nibrwr/ccusage.git}"
 branch="${CCUSAGE_BRANCH:-main}"
+script_dir="${0:A:h}"
+repo_root="${script_dir:h:h}"
 
 if ! command -v cargo >/dev/null 2>&1; then
   cat >&2 <<'EOF'
@@ -14,7 +16,11 @@ EOF
   exit 1
 fi
 
-cargo install --git "$repo_url" --branch "$branch" --package ccusage --locked --force
+if [[ -f "$repo_root/rust/crates/ccusage/Cargo.toml" ]]; then
+  cargo install --path "$repo_root/rust/crates/ccusage" --locked --force
+else
+  cargo install --git "$repo_url" --branch "$branch" --locked --force ccusage
+fi
 
 zshrc="${ZDOTDIR:-$HOME}/.zshrc"
 path_line='export PATH="$HOME/.cargo/bin:$PATH"'
@@ -29,4 +35,3 @@ else
 fi
 
 print "Installed: $("$HOME/.cargo/bin/ccusage" --version)"
-
