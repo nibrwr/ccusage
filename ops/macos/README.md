@@ -121,3 +121,15 @@ ops/macos/install-export-launchd.zsh
 
 The job runs every 15 minutes by default. Override the interval with
 `CCUSAGE_EXPORT_INTERVAL_SECONDS`.
+
+For fresher shared reports, use a shorter interval when installing the job:
+
+```sh
+CCUSAGE_EXPORT_INTERVAL_SECONDS=60 ops/macos/install-export-launchd.zsh
+```
+
+Check whether the job is loaded and when each Mac last exported data:
+
+```sh
+ops/macos/status-codex-fleet.zsh
+```
