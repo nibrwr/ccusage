@@ -3,19 +3,31 @@ set -euo pipefail
 
 fleet_root="${CCUSAGE_FLEET_ROOT:-$HOME/Library/Application Support/ccusage-fleet}"
 ccusage_bin="${CCUSAGE_BIN:-ccusage}"
+refresh_before_report="${CCUSAGE_REFRESH_BEFORE_REPORT:-0}"
 kind="${1:-monthly}"
 
 if [[ "$kind" == "-h" || "$kind" == "--help" ]]; then
   cat <<'EOF'
-usage: report-codex-fleet-by-machine.zsh [daily|monthly|session] [ccusage options...]
+usage: report-codex-fleet-by-machine.zsh [--refresh|--no-refresh] [daily|monthly|session] [ccusage options...]
 
 Examples:
   ops/macos/report-codex-fleet-by-machine.zsh monthly
+  ops/macos/report-codex-fleet-by-machine.zsh --refresh monthly
   ops/macos/report-codex-fleet-by-machine.zsh daily --since 2026-05-01
   ops/macos/report-codex-fleet-by-machine.zsh monthly --offline
 EOF
   exit 0
 fi
+
+while [[ "${1:-}" == "--refresh" || "${1:-}" == "--no-refresh" ]]; do
+  case "$1" in
+    --refresh) refresh_before_report=1 ;;
+    --no-refresh) refresh_before_report=0 ;;
+  esac
+  shift
+done
+
+kind="${1:-monthly}"
 
 case "$kind" in
   daily | monthly | session) shift || true ;;
@@ -33,6 +45,15 @@ if ! command -v "$ccusage_bin" >/dev/null 2>&1; then
     print -u2 "Run ops/macos/install-ccusage.zsh, then open a new terminal or set CCUSAGE_BIN=/path/to/ccusage."
     exit 127
   fi
+fi
+
+if [[ "$refresh_before_report" == "1" ]]; then
+  if [[ -z "${CCUSAGE_MACHINE_ID:-}" ]]; then
+    print -u2 "CCUSAGE_MACHINE_ID is required for automatic refresh."
+    print -u2 "Source ops/macos/machines/<machine>.env first, or pass --no-refresh."
+    exit 2
+  fi
+  "${0:A:h}/export-codex-logs.zsh"
 fi
 
 homes=()

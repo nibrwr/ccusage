@@ -64,6 +64,10 @@ source ops/macos/machines/mac-mini-m4-1.env
 source ops/macos/machines/macbook-air-m4.env
 ```
 
+Machine configs also enable local refresh before report commands. Pass
+`--no-refresh` to a report command when you only want to read the already
+exported fleet data.
+
 Optionally opt into iCloud Drive as the shared fleet folder:
 
 ```sh

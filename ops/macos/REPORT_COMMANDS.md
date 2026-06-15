@@ -3,8 +3,13 @@
 ```sh
 cd ~/Development/ccusage
 git pull
+source ops/macos/machines/mac-mini-m4-1.env
 source ops/macos/fleet-roots/icloud.env
 ```
+
+Use `source ops/macos/machines/macbook-air-m4.env` on the MacBook Air.
+Machine profiles refresh local usage before reports. Add `--no-refresh` to skip
+that for one command.
 
 ## Combined Tables
 
@@ -12,6 +17,7 @@ source ops/macos/fleet-roots/icloud.env
 ops/macos/report-codex-fleet.zsh daily
 ops/macos/report-codex-fleet.zsh monthly
 ops/macos/report-codex-fleet.zsh session
+ops/macos/report-codex-fleet.zsh --no-refresh monthly
 ```
 
 ## By-Mac Tables
@@ -48,4 +54,3 @@ ops/macos/report-codex-fleet.zsh monthly --json
 ops/macos/report-codex-fleet.zsh --machine mac-mini-m4-1 daily --json
 ops/macos/report-codex-fleet.zsh --machine macbook-air-m4 daily --json
 ```
-
