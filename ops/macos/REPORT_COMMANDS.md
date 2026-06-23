@@ -24,8 +24,18 @@ ops/macos/report-codex-fleet.zsh --no-refresh monthly
 
 ```sh
 ops/macos/report-codex-fleet-by-machine.zsh daily
+ops/macos/report-codex-fleet-by-machine.zsh weekly
 ops/macos/report-codex-fleet-by-machine.zsh monthly
 ops/macos/report-codex-fleet-by-machine.zsh session
+```
+
+## Scheduled Report Delivery
+
+```sh
+source ops/macos/fleet-roots/icloud.env
+ops/macos/install-report-launchd.zsh
+ops/macos/generate-codex-fleet-report.zsh weekly
+ops/macos/generate-codex-fleet-report.zsh monthly
 ```
 
 ## One Mac Tables

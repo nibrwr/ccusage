@@ -8,11 +8,12 @@ kind="${1:-monthly}"
 
 if [[ "$kind" == "-h" || "$kind" == "--help" ]]; then
   cat <<'EOF'
-usage: report-codex-fleet-by-machine.zsh [--refresh|--no-refresh] [daily|monthly|session] [ccusage options...]
+usage: report-codex-fleet-by-machine.zsh [--refresh|--no-refresh] [daily|weekly|monthly|session] [ccusage options...]
 
 Examples:
   ops/macos/report-codex-fleet-by-machine.zsh monthly
   ops/macos/report-codex-fleet-by-machine.zsh --refresh monthly
+  ops/macos/report-codex-fleet-by-machine.zsh weekly
   ops/macos/report-codex-fleet-by-machine.zsh daily --since 2026-05-01
   ops/macos/report-codex-fleet-by-machine.zsh monthly --offline
 EOF
@@ -30,9 +31,9 @@ done
 kind="${1:-monthly}"
 
 case "$kind" in
-  daily | monthly | session) shift || true ;;
+  daily | weekly | monthly | session) shift || true ;;
   *)
-    print -u2 "usage: $0 [daily|monthly|session] [ccusage options...]"
+    print -u2 "usage: $0 [daily|weekly|monthly|session] [ccusage options...]"
     exit 2
     ;;
 esac
@@ -80,15 +81,19 @@ for home in "${homes[@]}"; do
   machine="${home:t}"
   out="$tmp_dir/$machine.json"
   print -u2 "Reading $machine..."
-  CODEX_HOME="$home" "$ccusage_bin" codex "$kind" --json "${ccusage_args[@]}" > "$out"
+  ccusage_kind="$kind"
+  if [[ "$kind" == "weekly" ]]; then
+    ccusage_kind="daily"
+  fi
+  CODEX_HOME="$home" "$ccusage_bin" codex "$ccusage_kind" --json "${ccusage_args[@]}" > "$out"
   ruby_args+=("$machine" "$out")
 done
 
-ruby -r json - "${ruby_args[@]}" <<'RUBY'
+ruby -r json -r date - "${ruby_args[@]}" <<'RUBY'
 kind = ARGV.shift
-rows_key = { "daily" => "daily", "monthly" => "monthly", "session" => "sessions" }.fetch(kind)
-period_key = { "daily" => "date", "monthly" => "month", "session" => "sessionId" }.fetch(kind)
-period_label = { "daily" => "Date", "monthly" => "Month", "session" => "Session" }.fetch(kind)
+rows_key = { "daily" => "daily", "weekly" => "daily", "monthly" => "monthly", "session" => "sessions" }.fetch(kind)
+period_key = { "daily" => "date", "weekly" => "week", "monthly" => "month", "session" => "sessionId" }.fetch(kind)
+period_label = { "daily" => "Date", "weekly" => "Week", "monthly" => "Month", "session" => "Session" }.fetch(kind)
 
 def comma(value)
   value.to_i.to_s.reverse.gsub(/(\d{3})(?=\d)/, '\\1,').reverse
@@ -108,9 +113,38 @@ end
 table = []
 fleet = Hash.new(0)
 
+def weekly_rows(rows)
+  grouped = Hash.new do |hash, key|
+    hash[key] = {
+      "week" => key,
+      "inputTokens" => 0,
+      "outputTokens" => 0,
+      "cachedInputTokens" => 0,
+      "totalTokens" => 0,
+      "costUSD" => 0.0,
+    }
+  end
+
+  rows.each do |row|
+    date = Date.iso8601(row.fetch("date"))
+    week = (date - (date.cwday - 1)).iso8601
+    group = grouped[week]
+    group["inputTokens"] += row.fetch("inputTokens")
+    group["outputTokens"] += row.fetch("outputTokens")
+    group["cachedInputTokens"] += row.fetch("cachedInputTokens")
+    group["totalTokens"] += row.fetch("totalTokens")
+    group["costUSD"] += row.fetch("costUSD")
+  end
+
+  grouped.values.sort_by { |row| row.fetch("week") }
+end
+
 ARGV.each_slice(2) do |machine, path|
   data = JSON.parse(File.read(path))
-  data.fetch(rows_key, []).each do |row|
+  rows = data.fetch(rows_key, [])
+  rows = weekly_rows(rows) if kind == "weekly"
+
+  rows.each do |row|
     table << [
       machine,
       shorten(row.fetch(period_key), kind == "session" ? 36 : 10),

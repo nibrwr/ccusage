@@ -98,6 +98,7 @@ Usage broken out by Mac:
 
 ```sh
 ops/macos/report-codex-fleet-by-machine.zsh monthly
+ops/macos/report-codex-fleet-by-machine.zsh weekly
 ops/macos/report-codex-fleet-by-machine.zsh daily --since 2026-05-01
 ```
 
@@ -136,4 +137,25 @@ Check whether the job is loaded and when each Mac last exported data:
 
 ```sh
 ops/macos/status-codex-fleet.zsh
+```
+
+## Scheduled Reports
+
+Install weekly and monthly by-machine report delivery from the reporting Mac's
+GUI session:
+
+```sh
+source ops/macos/fleet-roots/icloud.env
+ops/macos/install-report-launchd.zsh
+```
+
+Reports are saved under `$CCUSAGE_FLEET_ROOT/reports` and a macOS notification
+is posted when each report is generated. By default, weekly reports run Monday
+at 08:00 and monthly reports run on day 1 at 08:00.
+
+Generate a report immediately:
+
+```sh
+ops/macos/generate-codex-fleet-report.zsh weekly
+ops/macos/generate-codex-fleet-report.zsh monthly
 ```
