@@ -4,6 +4,13 @@ set -euo pipefail
 machine_id="${CCUSAGE_MACHINE_ID:-${HOST%%.*}}"
 fleet_root="${CCUSAGE_FLEET_ROOT:-$HOME/Library/Application Support/ccusage-fleet}"
 codex_home="${CODEX_HOME:-$HOME/.codex}"
+lock_dir="${TMPDIR:-/tmp}/ccusage-codex-export-$machine_id.lock"
+
+if ! mkdir "$lock_dir" 2>/dev/null; then
+  print "Codex export already running for $machine_id; skipping this run."
+  exit 0
+fi
+trap 'rmdir "$lock_dir"' EXIT INT TERM
 
 if [[ "$codex_home" == *","* ]]; then
   print -u2 "CODEX_HOME contains multiple paths. Set it to this Mac's local Codex home before exporting."
