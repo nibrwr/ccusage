@@ -21,6 +21,8 @@ mkdir -p "$report_dir"
 
 out="$report_dir/codex-fleet-by-machine-$kind-$timestamp.txt"
 latest="$report_dir/codex-fleet-by-machine-$kind-latest.txt"
+tmp="$report_dir/.codex-fleet-by-machine-$kind-$timestamp.tmp"
+trap 'rm -f "$tmp"' EXIT INT TERM
 
 {
   print "ccusage Codex fleet by-machine $kind report"
@@ -28,8 +30,9 @@ latest="$report_dir/codex-fleet-by-machine-$kind-latest.txt"
   print "Fleet root: $fleet_root"
   print ""
   "$script_dir/report-codex-fleet-by-machine.zsh" --no-refresh "$kind" "$@"
-} > "$out"
+} > "$tmp"
 
+mv "$tmp" "$out"
 cp "$out" "$latest"
 
 if [[ "${CCUSAGE_REPORT_NOTIFY:-1}" == "1" ]] && command -v osascript >/dev/null 2>&1; then
