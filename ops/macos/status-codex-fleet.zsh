@@ -32,9 +32,9 @@ fi
 
 print ""
 print "Exported machines:"
-for home in "$root"/*(N/); do
-  machine="${home:t}"
-  files=("$home"/sessions/**/*(.N) "$home"/archived_sessions/**/*(.N) "$home"/config.toml(.N))
+for machine_dir in "$root"/*(N/); do
+  machine="${machine_dir:t}"
+  files=("$machine_dir"/sessions/**/*.jsonl(.N) "$machine_dir"/archived_sessions/**/*.jsonl(.N))
 
   if [[ ${#files[@]} -eq 0 ]]; then
     print "  $machine: no files"
@@ -52,5 +52,12 @@ for home in "$root"/*(N/); do
   done
 
   newest_time="$(date -r "$newest_epoch" '+%Y-%m-%d %H:%M:%S %Z')"
-  print "  $machine: $newest_time  ${newest_path#$home/}"
+  if [[ -f "$machine_dir/.last-export" ]]; then
+    exported_time="$(tail -n 1 "$machine_dir/.last-export")"
+  else
+    exported_time="unknown (legacy snapshot)"
+  fi
+  print "  $machine:"
+  print "    Last successful export: $exported_time"
+  print "    Newest data file: $newest_time  ${newest_path#$machine_dir/}"
 done

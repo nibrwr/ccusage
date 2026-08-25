@@ -139,6 +139,15 @@ Check whether the job is loaded and when each Mac last exported data:
 ops/macos/status-codex-fleet.zsh
 ```
 
+The status command distinguishes the last successful export from the newest
+data file in each snapshot. Reports include the same snapshot timestamps in
+their header. Export errors are recorded in
+`~/Library/Logs/ccusage/export-codex-logs.err.log`.
+
+Session JSONL files are copied once and then updated by appending only their new
+bytes. This avoids replacing existing iCloud Drive files and keeps recurring
+exports incremental.
+
 ## Scheduled Reports
 
 Install weekly and monthly by-machine report delivery from the reporting Mac's
@@ -149,9 +158,13 @@ source ops/macos/fleet-roots/icloud.env
 ops/macos/install-report-launchd.zsh
 ```
 
-Reports are saved under `$CCUSAGE_FLEET_ROOT/reports` and a macOS notification
-is posted when each report is generated. By default, weekly reports run Monday
-at 08:00 and monthly reports run on day 1 at 08:00.
+Timestamped reports are archived under
+`$CCUSAGE_FLEET_ROOT/reports/YYYY-MM/`. The untagged weekly and monthly
+`*-latest.txt` files remain directly under `$CCUSAGE_FLEET_ROOT/reports` for
+quick access. Existing timestamped files are organized automatically the next
+time a report is generated. A macOS notification is posted after generation.
+By default, weekly reports run Monday at 08:00 and monthly reports run on day 1
+at 08:00.
 
 Generate a report immediately:
 
@@ -159,3 +172,6 @@ Generate a report immediately:
 ops/macos/generate-codex-fleet-report.zsh weekly
 ops/macos/generate-codex-fleet-report.zsh monthly
 ```
+
+When a machine profile is sourced, immediate report generation first exports
+that Mac and stops without replacing `latest` if the export fails.

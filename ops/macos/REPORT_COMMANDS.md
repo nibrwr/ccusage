@@ -11,6 +11,14 @@ Use `source ops/macos/machines/macbook-air-m4.env` on the MacBook Air.
 Machine profiles refresh local usage before reports. Add `--no-refresh` to skip
 that for one command.
 
+Check the last successful export and newest data file for every Mac:
+
+```sh
+ops/macos/status-codex-fleet.zsh
+```
+
+Archived reports include these snapshot timestamps in their header.
+
 ## Combined Tables
 
 ```sh
@@ -37,6 +45,12 @@ ops/macos/install-report-launchd.zsh
 ops/macos/generate-codex-fleet-report.zsh weekly
 ops/macos/generate-codex-fleet-report.zsh monthly
 ```
+
+Timestamped reports are archived under `reports/YYYY-MM/`. Only
+`codex-fleet-by-machine-weekly-latest.txt` and
+`codex-fleet-by-machine-monthly-latest.txt` remain at the report root.
+With a machine profile sourced, these commands export that Mac before writing
+the report and leave `latest` unchanged if the export fails.
 
 ## One Mac Tables
 

@@ -27,13 +27,29 @@ mkdir -p "$dest"
 
 for name in sessions archived_sessions; do
   if [[ -d "$codex_home/$name" ]]; then
-    mkdir -p "$dest/$name"
-    rsync -a --delete "$codex_home/$name/" "$dest/$name/"
+    for source_file in "$codex_home/$name"/**/*(.N); do
+      relative_path="${source_file#$codex_home/$name/}"
+      target_file="$dest/$name/$relative_path"
+      source_size="$(stat -f '%z' "$source_file")"
+      target_size="$(stat -f '%z' "$target_file" 2>/dev/null || print -1)"
+
+      if [[ ! -f "$target_file" ]]; then
+        mkdir -p "${target_file:h}"
+        cp "$source_file" "$target_file"
+      elif (( source_size > target_size )); then
+        tail -c "+$((target_size + 1))" "$source_file" >> "$target_file"
+      elif (( source_size < target_size )); then
+        print -u2 "Exported file is larger than its source: $target_file"
+        print -u2 "Run this exporter manually from Terminal to repair the snapshot."
+        exit 1
+      fi
+    done
   fi
 done
 
-if [[ -f "$codex_home/config.toml" ]]; then
+if [[ -f "$codex_home/config.toml" && ! -f "$dest/config.toml" ]]; then
   cp "$codex_home/config.toml" "$dest/config.toml"
 fi
 
+date '+%Y-%m-%d %H:%M:%S %Z' >> "$dest/.last-export"
 print "Exported Codex logs for $machine_id to $dest"

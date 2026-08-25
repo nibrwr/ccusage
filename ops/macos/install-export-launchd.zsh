@@ -46,3 +46,7 @@ print "Installed launchd exporter for $machine_id"
 print "Fleet root: $fleet_root"
 print "Codex home: $codex_home"
 print "Interval: ${interval}s"
+if [[ "$fleet_root" == "$HOME/Library/Mobile Documents/"* ]]; then
+  print "iCloud note: macOS may deny LaunchAgents access to existing iCloud folders."
+  print "Verify the export timestamp with status-codex-fleet.zsh after installation."
+fi
