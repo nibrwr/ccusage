@@ -159,3 +159,59 @@ Generate a report immediately:
 ops/macos/generate-codex-fleet-report.zsh weekly
 ops/macos/generate-codex-fleet-report.zsh monthly
 ```
+
+## Sanitized Codex metadata mode
+
+For the Continuous Improvement System, use `--metadata` on the existing
+installer labels. This mode requires the existing iCloud fleet root, a local
+Python 3.9+ interpreter and an installed ccusage with JSON session,
+`--offline`, `--no-cost` and `--single-thread` support. The verified M6
+ccusage executable was 20.0.49. Validate the installed CLI separately on
+each host. The collector combines native and ccusage evidence conservatively.
+Activity without corroborated counters remains partial or unlinked. It
+never emits session paths, config files or transcript content.
+
+Place the reviewed Python files in a stable owner-only support directory.
+Use the applicable verified machine profile before installation. After matching
+the physical Mac to its fleet ID, set `CCUSAGE_VERIFIED_HOSTNAME` to the
+verified local name from `scutil --get LocalHostName`. The local
+M6 machine ID is `mac-mini-m6`; the two existing IDs are unchanged.
+
+```sh
+source ops/macos/fleet-roots/icloud.env
+export CCUSAGE_MACHINE_ID=mac-mini-m6
+export CCUSAGE_VERIFIED_HOSTNAME=verified-local-hostname
+export CCUSAGE_METADATA_PYTHON=/absolute/path/to/python3
+export CCUSAGE_BINARY="$HOME/.local/bin/ccusage"
+ops/macos/install-export-launchd.zsh --metadata --render | plutil -lint -
+ops/macos/install-export-launchd.zsh --metadata
+```
+
+The same named exporter runs once when loaded, then every 900 seconds on
+the minis or 3,600 seconds on the Air. It has no keep-awake or KeepAlive
+option. Successful collection atomically replaces
+`summaries/<machine>/latest.json`. An optional `--session <UUID>` targeted
+proof is a separate file. The existing raw-log and report commands remain
+available for their prior authorized installations. Keep their historical
+files and do not point the raw exporter at them during this rollout.
+
+The M6 report uses Orchestrator's deterministic analyzer. Before installing,
+verify schedule capacity and preserve any intentional disablement. Pass the
+reviewed analyzer and optional owner-only evidence files via
+`CCUSAGE_IMPROVEMENT_SCRIPT`, `CCUSAGE_IMPROVEMENT_PRS` and
+`CCUSAGE_IMPROVEMENT_BINDINGS` as absolute paths. The metadata reporter
+installer renders or qualifies only the existing weekly label.
+
+```sh
+ops/macos/install-report-launchd.zsh --metadata --render | plutil -lint -
+# After confirming current owner, disablement, capacity and time zone:
+ops/macos/install-report-launchd.zsh --metadata --schedule-qualified
+```
+
+Read back the exact label in the owner's `gui/<uid>` domain and observe its
+last exit, interval or calendar configuration and output freshness. A
+rejected activation restores the prior plist and loaded state where known.
+The installer keeps backups in the user's ccusage log directory. An inactive
+existing plist needs its intent established before it can be replaced. For
+a healthy manual restart, operate only on the named job and confirm that
+the file was regenerated from the same inputs without duplicate totals.

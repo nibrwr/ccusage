@@ -2,6 +2,14 @@
 set -euo pipefail
 
 script_dir="${0:A:h}"
+if [[ "${1:-}" == "--metadata" ]]; then
+  shift
+  exec "${CCUSAGE_METADATA_PYTHON:-/usr/bin/python3}" "$script_dir/install-metadata-launchd.py" export "$@"
+fi
+if (( $# )); then
+  print -u2 "Unexpected option. Use --metadata to qualify the metadata LaunchAgent."
+  exit 2
+fi
 machine_id="${CCUSAGE_MACHINE_ID:-${HOST%%.*}}"
 fleet_root="${CCUSAGE_FLEET_ROOT:-$HOME/Library/Application Support/ccusage-fleet}"
 codex_home="${CODEX_HOME:-$HOME/.codex}"
