@@ -142,20 +142,41 @@ class LegacyExporterTests(unittest.TestCase):
         self.bootstrap_specs = []
         self.fail_run = False
         self.skip_write = False
+        self.candidate_row = None
+        self.interrupt = None
         self.old_archive = self.fleet / "codex" / self.machine / "fictional-archive"
         self.old_archive.parent.mkdir(parents=True)
         self.old_archive.write_bytes(b"historical fixture")
         self.installer = load_installer()
 
-    def snapshot_bytes(self, observed):
+    def snapshot_bytes(self, observed, *, complete_row=None):
+        if complete_row is None:
+            complete_row = {
+                "session_id": "4134e253-4645-4263-8b53-b4695a3221cd",
+                "quality": "complete",
+                "started_at": observed,
+                "last_activity": observed,
+                "models": ["gpt-6.1-sol"],
+                "efforts": ["medium"],
+                "tokens": {
+                    "input_tokens": 10,
+                    "cached_input_tokens": 2,
+                    "output_tokens": 5,
+                    "reasoning_output_tokens": 1,
+                    "total_tokens": 15,
+                },
+            }
         data = {
             "schema_version": 1,
-            "source": {"collector": "ccusage-codex-session+native-metadata"},
+            "source": {
+                "collector": "ccusage-codex-session+native-metadata",
+                "ccusage_version": "20.0.49",
+            },
             "machine_id": self.machine,
             "scope": "fleet",
             "observed_at": observed,
-            "sessions": [{"quality": "complete"}],
-            "coverage": {"complete": 1},
+            "sessions": [complete_row],
+            "coverage": {"complete": 1, "partial": 0, "unlinked": 0},
         }
         canonical = json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
         return json.dumps(
@@ -180,6 +201,8 @@ class LegacyExporterTests(unittest.TestCase):
 
     def launchctl(self, args):
         verb = args[0]
+        if verb == self.interrupt:
+            raise SystemExit(73)
         if verb == "print-disabled":
             return subprocess.CompletedProcess(args, 0, "", "")
         if verb == "print":
@@ -212,7 +235,11 @@ class LegacyExporterTests(unittest.TestCase):
                 self.summary.write_bytes(b"interrupted snapshot")
             elif not self.skip_write:
                 observed = datetime.now(timezone.utc).isoformat()
-                self.summary.write_bytes(self.snapshot_bytes(observed))
+                self.summary.write_bytes(
+                    self.snapshot_bytes(observed, complete_row=self.candidate_row)
+                )
+            if self.interrupt == "after bootstrap":
+                raise SystemExit(73)
         else:
             self.fail(f"Unexpected launchctl action {verb}")
         return subprocess.CompletedProcess(args, 0, "", "")
@@ -310,6 +337,42 @@ class LegacyExporterTests(unittest.TestCase):
         self.assertEqual(self.parked_bytes(), [self.original])
         self.assertEqual(self.loaded["StartInterval"], 900)
 
+    def test_retry_recovers_a_parked_but_loaded_legacy_job(self):
+        self.interrupt = "bootout"
+        self.assertEqual(self.execute("--migrate-legacy-export")[0], 73)
+        self.assertFalse(self.plist.exists())
+        self.assertEqual(self.loaded, self.raw_spec)
+        self.interrupt = None
+        status, message = self.execute("--migrate-legacy-export")
+        self.assertEqual(status, 0, message)
+        self.assertEqual(len(self.bootstrap_specs), 1)
+        self.assertEqual(self.parked_bytes(), [self.original])
+
+    def test_retry_recovers_a_written_but_unloaded_metadata_job(self):
+        self.interrupt = "bootstrap"
+        self.assertEqual(self.execute("--migrate-legacy-export")[0], 73)
+        self.assertTrue(self.plist.is_file())
+        self.assertIsNone(self.loaded)
+        self.interrupt = None
+        status, message = self.execute("--migrate-legacy-export")
+        self.assertEqual(status, 0, message)
+        self.assertEqual(len(self.bootstrap_specs), 1)
+        self.assertEqual(self.parked_bytes(), [self.original])
+
+    def test_retry_qualifies_a_loaded_but_unverified_metadata_job(self):
+        self.interrupt = "after bootstrap"
+        self.candidate_row = {"quality": "complete"}
+        self.assertEqual(self.execute("--migrate-legacy-export")[0], 73)
+        self.assertIsNotNone(self.loaded)
+        self.interrupt = None
+        self.candidate_row = None
+        status, message = self.execute("--migrate-legacy-export")
+        self.assertEqual(status, 0, message)
+        self.assertEqual(len(self.bootstrap_specs), 2)
+        self.assertEqual(self.parked_bytes(), [self.original])
+        self.assertNotEqual(self.summary.read_bytes(), self.last_good)
+        self.assertEqual(self.old_archive.read_bytes(), b"historical fixture")
+
     def test_migration_leaves_an_unrecognized_legacy_job_untouched(self):
         self.raw_spec["ProgramArguments"][2] += " ; another-command"
         self.original = plistlib.dumps(self.raw_spec)
@@ -321,13 +384,27 @@ class LegacyExporterTests(unittest.TestCase):
         self.assertEqual(self.bootstrap_specs, [])
 
     def test_migration_requires_a_verified_fallback_snapshot(self):
-        self.summary.write_bytes(b"corrupt")
+        checksummed_but_unusable = self.snapshot_bytes(
+            "2026-11-15T16:04:00Z", complete_row={"quality": "complete"}
+        )
+        for payload in (b"corrupt", checksummed_but_unusable):
+            with self.subTest(payload=payload):
+                self.summary.write_bytes(payload)
+                status, message = self.execute("--migrate-legacy-export")
+                self.assertEqual(status, 1)
+                self.assertIn("last good summary", message)
+                self.assertEqual(self.plist.read_bytes(), self.original)
+                self.assertEqual(self.loaded, self.raw_spec)
+                self.assertEqual(self.bootstrap_specs, [])
+
+    def test_migration_restores_the_fallback_if_first_summary_is_unusable(self):
+        self.candidate_row = {"quality": "complete"}
         status, message = self.execute("--migrate-legacy-export")
-        self.assertEqual(status, 1)
-        self.assertIn("last good summary", message)
-        self.assertEqual(self.plist.read_bytes(), self.original)
-        self.assertEqual(self.loaded, self.raw_spec)
-        self.assertEqual(self.bootstrap_specs, [])
+        self.assertEqual(status, 1, message)
+        self.assertIn("legacy exporter remains unloaded", message)
+        self.assertEqual(self.summary.read_bytes(), self.last_good)
+        self.assertEqual(self.parked_bytes(), [self.original])
+        self.assertIsNone(self.loaded)
 
 
 if __name__ == "__main__":

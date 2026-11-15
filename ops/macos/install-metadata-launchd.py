@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import runpy
 import shlex
 import shutil
 import stat
@@ -220,7 +221,7 @@ def verify_legacy_export(old, current, loaded, machine, fleet):
         or old["StartInterval"] <= 0
         or len(parts) != 4
         or parts[:3] != required
-        or script.name != "export-codex-logs.zsh"
+        or script.parts[-3:] != ("ops", "macos", "export-codex-logs.zsh")
         or not script.is_absolute()
         or script.is_symlink()
         or not script.is_file()
@@ -234,8 +235,7 @@ def verify_legacy_export(old, current, loaded, machine, fleet):
         )
 
 
-def verified_export(fleet, machine):
-    path = fleet / "summaries" / machine / "latest.json"
+def verified_export(path, machine):
     if any(item.is_symlink() for item in (path.parent, path.parent.parent)):
         raise ValueError("Refused a symlink in the summary path")
     limit = 8 * 1024 * 1024
@@ -248,32 +248,22 @@ def verified_export(fleet, machine):
         raise ValueError("Summary exceeds the readback size limit")
     wrapped = json.loads(payload)
     data = wrapped["data"]
-    canonical = json.dumps(
-        data, separators=(",", ":"), sort_keys=True, ensure_ascii=True
-    ).encode()
-    observed = datetime.fromisoformat(data["observed_at"].replace("Z", "+00:00"))
-    if (
-        data["schema_version"] != 1
-        or data["source"]["collector"] != "ccusage-codex-session+native-metadata"
-        or data["machine_id"] != machine
-        or data["scope"] != "fleet"
-        or hashlib.sha256(canonical).hexdigest() != wrapped["sha256"]
-        or not isinstance(data["sessions"], list)
-        or not data["sessions"]
-        or type(data["coverage"]["complete"]) is not int
-        or data["coverage"]["complete"] <= 0
-        or data["coverage"]["complete"]
-        != sum(row["quality"] == "complete" for row in data["sessions"])
-        or observed.tzinfo is None
-        or observed > datetime.now(timezone.utc) + timedelta(minutes=5)
+    collector = runpy.run_path(str(Path(__file__).with_name("export-codex-usage.py")))
+    if set(wrapped) != {"data", "sha256"} or (
+        hashlib.sha256(collector["canonical"](data)).hexdigest() != wrapped["sha256"]
     ):
-        raise ValueError("The export did not publish verifiable usage metadata")
-    return path, payload, observed
+        raise ValueError("The export did not publish a verifiable checksum")
+    observed = collector["verify_fleet_metadata"](
+        data, machine, datetime.now(timezone.utc)
+    )
+    return payload, observed
 
 
 def output_check(args, machine, fleet, process_started):
     if args.job == "export":
-        _, _, observed = verified_export(fleet, machine)
+        _, observed = verified_export(
+            fleet / "summaries" / machine / "latest.json", machine
+        )
         if observed < process_started.replace(microsecond=0):
             raise ValueError("The export did not publish fresh usage metadata")
     else:
@@ -325,28 +315,91 @@ def require_unloaded(target):
         raise ValueError("Could not verify that the named exporter is unloaded")
 
 
-def migrate_legacy(
-    args, machine, fleet, spec, domain, path, target, data, previous, log_dir
-):
+def owned_plist(path):
     try:
-        summary, last_good, observed = verified_export(fleet, machine)
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        raise ValueError("Existing plist has unverified ownership")
+    return path.read_bytes()
+
+
+def recovery_dir(log_dir):
+    recovery = log_dir / "legacy-export-recovery"
+    recovery.mkdir(mode=0o700, exist_ok=True)
+    info = recovery.lstat()
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.getuid()
+        or info.st_mode & 0o077
+    ):
+        raise ValueError("The exporter recovery directory must be owner-only")
+    return recovery
+
+
+def restore_verified_summary(summary, machine, last_good, observed):
+    try:
+        _, latest = verified_export(summary, machine)
+    except (OSError, TypeError, ValueError, KeyError, AttributeError):
+        latest = None
+    if latest is None or latest < observed:
+        if any(
+            item.is_symlink()
+            for item in (summary, summary.parent, summary.parent.parent)
+        ):
+            raise ValueError("The summary path changed during migration")
+        atomic_write(summary, last_good)
+
+
+def resume_migration(machine, fleet, spec, path, target, previous, recovery):
+    summary = fleet / "summaries" / machine / "latest.json"
+    saved = recovery / "last-good-summary.json"
+    last_good, observed = verified_export(saved, machine)
+    current = installed(target)
+    if current.returncode == 0:
+        if previous is not None:
+            check_owner(path, previous, spec, current)
+        else:
+            legacy = owned_plist(recovery / "legacy-export.plist")
+            if not check_owner(path, legacy, spec, current, migration=(machine, fleet)):
+                raise ValueError("The pending migration does not own the loaded job")
+        call(LAUNCHCTL, "bootout", target)
+    require_unloaded(target)
+    if owned_plist(path) != previous:
+        raise ValueError("The active plist changed during migration recovery")
+    if previous is not None:
+        os.replace(path, recovery / "failed-export.plist")
+    restore_verified_summary(summary, machine, last_good, observed)
+
+
+def migrate_legacy(
+    args, machine, fleet, spec, domain, path, target, data, previous, recovery
+):
+    summary = fleet / "summaries" / machine / "latest.json"
+    try:
+        last_good, observed = verified_export(summary, machine)
         initial = summary.stat()
     except (OSError, TypeError, ValueError, KeyError, AttributeError) as error:
         raise ValueError(
             "Publish and verify a last good summary before migration"
         ) from error
-    recovery = Path(tempfile.mkdtemp(prefix="legacy-export-", dir=log_dir))
     atomic_write(recovery / "last-good-summary.json", last_good)
+    pending = recovery / "pending-export.plist"
+    atomic_write(pending, data)
     previous_args = None
     if previous is not None:
-        if path.is_symlink() or path.read_bytes() != previous:
+        if owned_plist(path) != previous:
             raise ValueError("The legacy plist changed during migration preflight")
         current = installed(target)
         if not check_owner(path, previous, spec, current, migration=(machine, fleet)):
             raise ValueError("The legacy job changed during migration preflight")
         previous_args = plistlib.loads(previous)["ProgramArguments"]
         # Remove the launchable plist before unloading the old job.
-        os.replace(path, recovery / "legacy-export.plist")
+        parked = recovery / "legacy-export.plist"
+        if owned_plist(parked) not in (None, previous):
+            raise ValueError("Existing recovery files contain a different legacy plist")
+        os.replace(path, parked)
     try:
         if previous_args is not None:
             call(LAUNCHCTL, "bootout", target)
@@ -355,6 +408,7 @@ def migrate_legacy(
         after = summary.stat()
         if (after.st_ino, after.st_mtime_ns) == (initial.st_ino, initial.st_mtime_ns):
             raise ValueError("The replacement did not write a summary")
+        os.replace(pending, recovery / "qualified-export.plist")
     except (
         OSError,
         TypeError,
@@ -379,25 +433,14 @@ def migrate_legacy(
             raise ValueError(
                 f"{verification}. Recovery files are in {recovery}"
             ) from error
-        if path.exists() or path.is_symlink():
-            if path.is_symlink() or path.read_bytes() != data:
+        active = owned_plist(path)
+        if active is not None:
+            if active != data:
                 raise ValueError(
                     f"The active plist changed. Recovery files are in {recovery}"
                 ) from error
             os.replace(path, recovery / "failed-export.plist")
-        try:
-            _, _, latest = verified_export(fleet, machine)
-        except (OSError, TypeError, ValueError, KeyError, AttributeError):
-            latest = None
-        if latest is None or latest < observed:
-            if any(
-                item.is_symlink()
-                for item in (summary, summary.parent, summary.parent.parent)
-            ):
-                raise ValueError(
-                    f"The summary path changed. Recovery files are in {recovery}"
-                ) from error
-            atomic_write(summary, last_good)
+        restore_verified_summary(summary, machine, last_good, observed)
         raise ValueError(
             f"Metadata migration failed. The legacy exporter remains unloaded. "
             f"Verified summary retained. Recovery files are in {recovery}"
@@ -474,7 +517,20 @@ def install_checked_job(args, machine, fleet, spec, domain, path, log_dir):
         raise ValueError("Named job is intentionally disabled")
     if path.is_symlink() or (path.exists() and not path.is_file()):
         raise ValueError("Refused unexpected existing plist path")
-    previous = path.read_bytes() if path.exists() else None
+    previous = owned_plist(path)
+    if previous and plistlib.loads(previous).get("Disabled") is True:
+        raise ValueError("Named job plist is intentionally disabled")
+    data = plistlib.dumps(spec, sort_keys=False)
+    if args.migrate_legacy_export:
+        recovery = recovery_dir(log_dir)
+        pending = owned_plist(recovery / "pending-export.plist")
+        if pending is not None and pending != data:
+            raise ValueError(
+                "Finish the pending migration with its original configuration"
+            )
+        if pending is not None and previous in (None, data):
+            resume_migration(machine, fleet, spec, path, target, previous, recovery)
+            previous = None
     current = installed(target)
     was_loaded = current.returncode == 0
     legacy = check_owner(
@@ -484,17 +540,14 @@ def install_checked_job(args, machine, fleet, spec, domain, path, log_dir):
         current,
         migration=(machine, fleet) if args.migrate_legacy_export else None,
     )
-    if previous and plistlib.loads(previous).get("Disabled") is True:
-        raise ValueError("Named job plist is intentionally disabled")
     if previous and not was_loaded:
         raise ValueError(
             "Existing inactive plist requires an ownership and disablement decision"
         )
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    data = plistlib.dumps(spec, sort_keys=False)
-    if legacy or (args.migrate_legacy_export and previous is None):
+    if args.migrate_legacy_export and (legacy or previous is None):
         migrate_legacy(
-            args, machine, fleet, spec, domain, path, target, data, previous, log_dir
+            args, machine, fleet, spec, domain, path, target, data, previous, recovery
         )
         return
     if previous == data and was_loaded:

@@ -2,7 +2,8 @@
 """Publish an allowlisted metadata projection from local ccusage Codex records."""
 
 import argparse
-from datetime import datetime, timezone
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
 import json
@@ -58,6 +59,68 @@ def consistent(tokens):
         and tokens["reasoning_output_tokens"] <= tokens["output_tokens"]
         and tokens["total_tokens"] == tokens["input_tokens"] + tokens["output_tokens"]
     )
+
+
+def verify_fleet_metadata(data, machine, as_of):
+    """Check that the summary contains usable sanitized usage and return its time."""
+    observed = datetime.fromisoformat(data["observed_at"].replace("Z", "+00:00"))
+    latest_allowed = as_of + timedelta(minutes=5)
+    if (
+        type(data["schema_version"]) is not int
+        or data["schema_version"] != 1
+        or data["machine_id"] != machine
+        or data["scope"] != "fleet"
+        or data["source"]["collector"] != "ccusage-codex-session+native-metadata"
+        or not VERSION.fullmatch(data["source"]["ccusage_version"])
+        or observed.tzinfo is None
+        or observed > latest_allowed
+        or not isinstance(data["sessions"], list)
+    ):
+        raise ValueError("The export did not publish verifiable usage metadata")
+
+    seen = set()
+    counts = Counter()
+    latest_activity = observed + timedelta(minutes=5)
+    for row in data["sessions"]:
+        session = row["session_id"]
+        quality = row["quality"]
+        if not SESSION_ID.fullmatch(session) or session in seen:
+            raise ValueError("The export contains an invalid or duplicate session")
+        seen.add(session)
+        counts[quality] += 1
+        if quality == "partial" and row["tokens"] is None:
+            continue
+        start, last = utc(row["started_at"]), utc(row["last_activity"])
+        tokens = row["tokens"]
+        if (
+            quality != "complete"
+            or not isinstance(row["models"], list)
+            or not all(MODEL.fullmatch(model) for model in row["models"])
+            or not isinstance(row["efforts"], list)
+            or not all(effort in EFFORTS for effort in row["efforts"])
+            or not consistent(tokens)
+            or tokens.keys() != set(COUNTERS)
+            or any(number >= 2**63 for number in tokens.values())
+            or start is None
+            or last is None
+            or not (
+                datetime.fromisoformat(start.replace("Z", "+00:00"))
+                <= datetime.fromisoformat(last.replace("Z", "+00:00"))
+                <= latest_activity
+            )
+        ):
+            raise ValueError("The export contains an invalid usage row")
+
+    coverage = data["coverage"]
+    required = {"complete", "partial", "unlinked"}
+    if (
+        not required <= coverage.keys() <= required | {"ccusage_only"}
+        or any(type(number) is not int or number < 0 for number in coverage.values())
+        or any(coverage[key] != counts[key] for key in ("complete", "partial"))
+        or not counts["complete"]
+    ):
+        raise ValueError("The export did not report verifiable coverage")
+    return observed
 
 
 def find_logs(folders, selected):

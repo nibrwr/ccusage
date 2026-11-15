@@ -202,7 +202,9 @@ matches the original label, loaded arguments, ownership and fleet paths, then
 moves the original plist and saves the verified summary under the private
 ccusage logs directory. If the candidate fails, the installer unloads it and
 preserves the last verified summary. The raw exporter plist stays parked.
-After correcting the failure, use the same migration command to retry.
+After a failure or interruption, use the exact same command and package to
+resume, finish unloading the original job if necessary, and verify a new
+summary from the replacement.
 
 The M6 report uses Orchestrator's deterministic analyzer. Before installing,
 verify schedule capacity and preserve any intentional disablement. Pass the
