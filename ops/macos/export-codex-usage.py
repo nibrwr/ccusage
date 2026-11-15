@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 
 MACHINES = ("mac-mini-m4-1", "macbook-air-m4", "mac-mini-m6")
+SESSION_DIRECTORIES = ("sessions", "archived_sessions")
 UUID = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
 SESSION_ID = re.compile(UUID)
 LOG_ID = re.compile(r"(?:^|-)" + f"({UUID})$")
@@ -64,16 +65,31 @@ def consistent(tokens):
 def verify_fleet_metadata(data, machine, as_of):
     """Check that the summary contains usable sanitized usage and return its time."""
     observed = datetime.fromisoformat(data["observed_at"].replace("Z", "+00:00"))
-    latest_allowed = as_of + timedelta(minutes=5)
+    projected = {
+        "schema_version",
+        "machine_id",
+        "scope",
+        "observed_at",
+        "source",
+        "coverage",
+        "sessions",
+    }
+    source = data["source"]
+    required_source = {"collector", "ccusage_version"}
+    directories = source.get("directories", [])
     if (
-        type(data["schema_version"]) is not int
+        data.keys() != projected
+        or type(data["schema_version"]) is not int
         or data["schema_version"] != 1
         or data["machine_id"] != machine
         or data["scope"] != "fleet"
-        or data["source"]["collector"] != "ccusage-codex-session+native-metadata"
-        or not VERSION.fullmatch(data["source"]["ccusage_version"])
+        or not required_source <= source.keys() <= required_source | {"directories"}
+        or source["collector"] != "ccusage-codex-session+native-metadata"
+        or not VERSION.fullmatch(source["ccusage_version"])
+        or not isinstance(directories, list)
+        or not all(directory in SESSION_DIRECTORIES for directory in directories)
         or observed.tzinfo is None
-        or observed > latest_allowed
+        or observed > as_of + timedelta(minutes=5)
         or not isinstance(data["sessions"], list)
     ):
         raise ValueError("The export did not publish verifiable usage metadata")
@@ -82,34 +98,11 @@ def verify_fleet_metadata(data, machine, as_of):
     counts = Counter()
     latest_activity = observed + timedelta(minutes=5)
     for row in data["sessions"]:
-        session = row["session_id"]
-        quality = row["quality"]
-        if not SESSION_ID.fullmatch(session) or session in seen:
-            raise ValueError("The export contains an invalid or duplicate session")
+        session, quality = verify_usage_row(row, latest_activity)
+        if session in seen:
+            raise ValueError("The export contains a duplicate session")
         seen.add(session)
         counts[quality] += 1
-        if quality == "partial" and row["tokens"] is None:
-            continue
-        start, last = utc(row["started_at"]), utc(row["last_activity"])
-        tokens = row["tokens"]
-        if (
-            quality != "complete"
-            or not isinstance(row["models"], list)
-            or not all(MODEL.fullmatch(model) for model in row["models"])
-            or not isinstance(row["efforts"], list)
-            or not all(effort in EFFORTS for effort in row["efforts"])
-            or not consistent(tokens)
-            or tokens.keys() != set(COUNTERS)
-            or any(number >= 2**63 for number in tokens.values())
-            or start is None
-            or last is None
-            or not (
-                datetime.fromisoformat(start.replace("Z", "+00:00"))
-                <= datetime.fromisoformat(last.replace("Z", "+00:00"))
-                <= latest_activity
-            )
-        ):
-            raise ValueError("The export contains an invalid usage row")
 
     coverage = data["coverage"]
     required = {"complete", "partial", "unlinked"}
@@ -121,6 +114,55 @@ def verify_fleet_metadata(data, machine, as_of):
     ):
         raise ValueError("The export did not report verifiable coverage")
     return observed
+
+
+def verify_usage_row(row, latest_activity):
+    required = {
+        "session_id",
+        "quality",
+        "started_at",
+        "last_activity",
+        "models",
+        "efforts",
+        "tokens",
+    }
+    if not required <= row.keys() <= required | {"codex_version"}:
+        raise ValueError("The summary includes fields outside the metadata projection")
+    session, quality, version = (
+        row["session_id"],
+        row["quality"],
+        row.get("codex_version"),
+    )
+    start, last = utc(row["started_at"]), utc(row["last_activity"])
+    if (
+        not SESSION_ID.fullmatch(session)
+        or (version is not None and not VERSION.fullmatch(version))
+        or not isinstance(row["models"], list)
+        or not all(MODEL.fullmatch(model) for model in row["models"])
+        or not isinstance(row["efforts"], list)
+        or not all(effort in EFFORTS for effort in row["efforts"])
+        or (start is None and row["started_at"] is not None)
+        or (last is None and row["last_activity"] is not None)
+    ):
+        raise ValueError("The export contains invalid session metadata")
+    tokens = row["tokens"]
+    if quality == "partial" and tokens is None:
+        return session, quality
+    if (
+        quality != "complete"
+        or not consistent(tokens)
+        or tokens.keys() != set(COUNTERS)
+        or any(number >= 2**63 for number in tokens.values())
+        or start is None
+        or last is None
+        or not (
+            datetime.fromisoformat(start.replace("Z", "+00:00"))
+            <= datetime.fromisoformat(last.replace("Z", "+00:00"))
+            <= latest_activity
+        )
+    ):
+        raise ValueError("The export contains an invalid usage row")
+    return session, quality
 
 
 def find_logs(folders, selected):
@@ -274,7 +316,7 @@ def collect(args):
     codex = args.codex_home
     folders = [
         directory
-        for name in ("sessions", "archived_sessions")
+        for name in SESSION_DIRECTORIES
         if (directory := codex / name).is_dir() and not directory.is_symlink()
     ]
     if not folders:

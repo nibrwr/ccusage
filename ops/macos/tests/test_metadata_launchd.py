@@ -108,6 +108,13 @@ def load_installer():
     return module
 
 
+def checksummed_summary(data):
+    canonical = json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
+    return json.dumps(
+        {"data": data, "sha256": hashlib.sha256(canonical).hexdigest()}
+    ).encode()
+
+
 class LegacyExporterTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -178,10 +185,7 @@ class LegacyExporterTests(unittest.TestCase):
             "sessions": [complete_row],
             "coverage": {"complete": 1, "partial": 0, "unlinked": 0},
         }
-        canonical = json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
-        return json.dumps(
-            {"data": data, "sha256": hashlib.sha256(canonical).hexdigest()}
-        ).encode()
+        return checksummed_summary(data)
 
     def call(self, exe, *args, check=True):
         if exe == "/usr/sbin/scutil":
@@ -387,8 +391,24 @@ class LegacyExporterTests(unittest.TestCase):
         checksummed_but_unusable = self.snapshot_bytes(
             "2026-11-15T16:04:00Z", complete_row={"quality": "complete"}
         )
-        for payload in (b"corrupt", checksummed_but_unusable):
-            with self.subTest(payload=payload):
+        extra_row = json.loads(self.last_good)["data"]
+        extra_row["sessions"][0]["unprojected"] = "fictional-private-content"
+        extra_source = json.loads(self.last_good)["data"]
+        extra_source["source"]["directories"] = ["/fictional/private/path"]
+        for case, payload in (
+            ("corrupt", b"corrupt"),
+            ("invalid row", checksummed_but_unusable),
+            ("wrong encoding", self.last_good.decode().encode("utf-16")),
+            ("unexpected field", checksummed_summary(extra_row)),
+            ("invalid source directory", checksummed_summary(extra_source)),
+            (
+                "duplicate field",
+                self.last_good.replace(
+                    b'{"data"', b'{"data":"fictional-private-content","data"', 1
+                ),
+            ),
+        ):
+            with self.subTest(case=case):
                 self.summary.write_bytes(payload)
                 status, message = self.execute("--migrate-legacy-export")
                 self.assertEqual(status, 1)

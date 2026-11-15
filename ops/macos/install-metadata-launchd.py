@@ -235,6 +235,13 @@ def verify_legacy_export(old, current, loaded, machine, fleet):
         )
 
 
+def unique_fields(pairs):
+    result = dict(pairs)
+    if len(result) != len(pairs):
+        raise ValueError("The summary contains duplicate fields")
+    return result
+
+
 def verified_export(path, machine):
     if any(item.is_symlink() for item in (path.parent, path.parent.parent)):
         raise ValueError("Refused a symlink in the summary path")
@@ -246,16 +253,22 @@ def verified_export(path, machine):
         payload = stream.read(limit + 1)
     if len(payload) > limit:
         raise ValueError("Summary exceeds the readback size limit")
-    wrapped = json.loads(payload)
-    data = wrapped["data"]
     collector = runpy.run_path(str(Path(__file__).with_name("export-codex-usage.py")))
-    if set(wrapped) != {"data", "sha256"} or (
-        hashlib.sha256(collector["canonical"](data)).hexdigest() != wrapped["sha256"]
-    ):
-        raise ValueError("The export did not publish a verifiable checksum")
-    observed = collector["verify_fleet_metadata"](
-        data, machine, datetime.now(timezone.utc)
-    )
+    try:
+        wrapped = json.loads(payload.decode("utf-8"), object_pairs_hook=unique_fields)
+        data = wrapped["data"]
+        if set(wrapped) != {"data", "sha256"} or (
+            hashlib.sha256(collector["canonical"](data)).hexdigest()
+            != wrapped["sha256"]
+        ):
+            raise ValueError("The export did not publish a verifiable checksum")
+        observed = collector["verify_fleet_metadata"](
+            data, machine, datetime.now(timezone.utc)
+        )
+    except (TypeError, ValueError, KeyError, AttributeError, OverflowError) as error:
+        raise ValueError(
+            "The summary does not match the sanitized usage format"
+        ) from error
     return payload, observed
 
 
