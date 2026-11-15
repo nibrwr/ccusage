@@ -195,6 +195,15 @@ proof is a separate file. The existing raw-log and report commands remain
 available for their prior authorized installations. Keep their historical
 files and do not point the raw exporter at them during this rollout.
 
+For an approved M4 or Air migration, first verify a complete sanitized summary
+from that Mac and qualify any replacement for reports that still use the raw
+exports. Run the same metadata installer with `--migrate-legacy-export`. It
+matches the original label, loaded arguments, ownership and fleet paths, then
+moves the original plist and saves the verified summary under the private
+ccusage logs directory. If the candidate fails, the installer unloads it and
+preserves the last verified summary. The raw exporter plist stays parked.
+After correcting the failure, use the same migration command to retry.
+
 The M6 report uses Orchestrator's deterministic analyzer. Before installing,
 verify schedule capacity and preserve any intentional disablement. Pass the
 reviewed analyzer and optional owner-only evidence files via
