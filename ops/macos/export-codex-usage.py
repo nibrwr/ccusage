@@ -10,11 +10,14 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 
 MACHINES = ("mac-mini-m4-1", "macbook-air-m4", "mac-mini-m6")
 SESSION_DIRECTORIES = ("sessions", "archived_sessions")
+COMPRESSED_SUFFIX = ".jsonl.zst"
+ZSTD_PATH = "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin"
 UUID = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
 SESSION_ID = re.compile(UUID)
 LOG_ID = re.compile(r"(?:^|-)" + f"({UUID})$")
@@ -174,12 +177,12 @@ def find_logs(folders, selected):
     for folder in folders:
         for directory, _, names in os.walk(folder, onerror=unreadable):
             for name in names:
-                if not name.endswith(".jsonl"):
+                if not name.endswith((".jsonl", COMPRESSED_SUFFIX)):
                     continue
                 path = Path(directory) / name
                 if path.is_symlink() or not path.is_file():
                     continue
-                match = LOG_ID.search(path.stem)
+                match = LOG_ID.search(name.removesuffix(".zst").removesuffix(".jsonl"))
                 if not match:
                     unlinked += 1
                 elif not selected or match[1] == selected:
@@ -187,7 +190,24 @@ def find_logs(folders, selected):
     return files, unlinked
 
 
-def native_metadata(path, session_id):
+def native_metadata(path, session_id, decoder):
+    with path.open("rb") as stream:
+        if path.suffix != ".zst":
+            return read_native_metadata(stream, session_id)
+        with subprocess.Popen(
+            [decoder, "-qdc", "-M128MB"],
+            stdin=stream,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        ) as process:
+            with process.stdout:
+                result = read_native_metadata(process.stdout, session_id)
+            if process.wait() != 0:
+                result["tokens"] = None
+            return result
+
+
+def read_native_metadata(stream, session_id):
     result = {
         "session_id": session_id,
         "started_at": None,
@@ -199,52 +219,51 @@ def native_metadata(path, session_id):
     efforts = set()
     complete = True
     last_counters = None
-    with path.open("rb") as stream:
-        for line in stream:
-            match = EVENT.match(line[:160])
-            if not match or (
-                match[1] == b"event_msg" and not TOKEN_EVENT.search(line[:1024])
-            ):
-                continue
-            if not line.endswith(b"\n"):
+    for line in stream:
+        match = EVENT.match(line[:160])
+        if not match or (
+            match[1] == b"event_msg" and not TOKEN_EVENT.search(line[:1024])
+        ):
+            continue
+        if not line.endswith(b"\n"):
+            complete = False
+            continue
+        try:
+            event = json.loads(line)
+            payload = event["payload"]
+            if not isinstance(payload, dict):
+                raise ValueError()
+        except (ValueError, KeyError, UnicodeError):
+            complete = False
+            continue
+        if match[1] == b"session_meta":
+            if payload.get("id") != session_id or payload.get("forked_from_id"):
                 complete = False
                 continue
-            try:
-                event = json.loads(line)
-                payload = event["payload"]
-                if not isinstance(payload, dict):
-                    raise ValueError()
-            except (ValueError, KeyError, UnicodeError):
+            result["started_at"] = utc(payload.get("timestamp")) or utc(
+                event.get("timestamp")
+            )
+            version = payload.get("cli_version")
+            if isinstance(version, str) and VERSION.fullmatch(version):
+                result["codex_version"] = version
+        elif match[1] == b"turn_context":
+            effort = payload.get("effort") or payload.get("reasoning_effort")
+            if isinstance(effort, str) and effort in EFFORTS:
+                efforts.add(effort)
+        elif payload.get("type") == "token_count" and isinstance(
+            payload.get("info"), dict
+        ):
+            total = payload["info"].get("total_token_usage")
+            if not consistent(total):
                 complete = False
                 continue
-            if match[1] == b"session_meta":
-                if payload.get("id") != session_id or payload.get("forked_from_id"):
-                    complete = False
-                    continue
-                result["started_at"] = utc(payload.get("timestamp")) or utc(
-                    event.get("timestamp")
-                )
-                version = payload.get("cli_version")
-                if isinstance(version, str) and VERSION.fullmatch(version):
-                    result["codex_version"] = version
-            elif match[1] == b"turn_context":
-                effort = payload.get("effort") or payload.get("reasoning_effort")
-                if isinstance(effort, str) and effort in EFFORTS:
-                    efforts.add(effort)
-            elif payload.get("type") == "token_count" and isinstance(
-                payload.get("info"), dict
+            counters = {key: total[key] for key in COUNTERS}
+            if last_counters and any(
+                counters[key] < last_counters[key] for key in COUNTERS
             ):
-                total = payload["info"].get("total_token_usage")
-                if not consistent(total):
-                    complete = False
-                    continue
-                counters = {key: total[key] for key in COUNTERS}
-                if last_counters and any(
-                    counters[key] < last_counters[key] for key in COUNTERS
-                ):
-                    complete = False
-                last_counters = counters
-                result["last_activity"] = utc(event.get("timestamp"))
+                complete = False
+            last_counters = counters
+            result["last_activity"] = utc(event.get("timestamp"))
     result["efforts"] = sorted(efforts)
     if complete and result["started_at"] and result["last_activity"]:
         result["tokens"] = last_counters
@@ -324,6 +343,11 @@ def collect(args):
     files, unlinked = find_logs(folders, args.session)
     if args.session and not files:
         raise ValueError("Requested session metadata is unavailable")
+    decoder = None
+    if any(path.suffix == ".zst" for paths in files.values() for path in paths):
+        decoder = shutil.which("zstd", path=ZSTD_PATH)
+        if decoder is None:
+            raise ValueError("The zstd CLI is required for compressed Codex logs")
     version = (
         subprocess.run(
             [args.ccusage, "--version"],
@@ -349,7 +373,7 @@ def collect(args):
     sessions = []
     for session_id, paths in sorted(files.items()):
         reports = grouped.get(session_id, [])
-        native = [native_metadata(path, session_id) for path in paths]
+        native = [native_metadata(path, session_id, decoder) for path in paths]
         primary = native[0]
         if not reports and len(native) == 1 and primary["last_activity"] is None:
             unlinked += 1

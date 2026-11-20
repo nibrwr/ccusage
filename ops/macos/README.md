@@ -168,6 +168,10 @@ Python 3.9+ interpreter and an installed ccusage with JSON session,
 `--offline`, `--no-cost` and `--single-thread` support. The verified M6
 ccusage executable was 20.0.49. Validate the installed CLI separately on
 each host. The collector combines native and ccusage evidence conservatively.
+It checks plain `.jsonl` and compressed `.jsonl.zst` sessions from both live and
+archived directories. Compressed sessions require a ccusage build that reads
+them and an existing `zstd` CLI in a standard system or Homebrew location.
+Matching copies count once and conflicting copies remain partial.
 Activity without corroborated counters remains partial or unlinked. It
 never emits session paths, config files or transcript content.
 
