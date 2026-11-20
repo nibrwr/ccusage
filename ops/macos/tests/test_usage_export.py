@@ -148,6 +148,48 @@ class UsageExportTests(unittest.TestCase):
             {SESSION: 170, LATER: 130},
         )
 
+    def compress(self, source):
+        zstd = shutil.which("zstd")
+        self.assertIsNotNone(zstd, "Run with the zstd CLI on PATH")
+        target = source.with_suffix(".jsonl.zst")
+        subprocess.run([zstd, "-q", "-o", str(target), str(source)], check=True)
+        return target
+
+    def test_compressed_archive_recovers_verified_usage(self):
+        source = self.write_session(archived=True)
+        self.compress(source)
+        source.unlink()
+        self.export()
+        data = self.snapshot()
+        self.assertEqual(data["coverage"]["complete"], 1)
+        self.assertEqual(data["coverage"]["ccusage_only"], 0)
+        self.assertEqual(data["sessions"][0]["tokens"], COUNTERS)
+
+    def test_mixed_formats_keep_one_verified_session(self):
+        source = self.write_session(archived=True)
+        self.compress(source)
+        self.export()
+        self.assertEqual(self.snapshot()["coverage"]["complete"], 1)
+
+    def test_conflicting_compressed_copy_is_partial(self):
+        self.write_session()
+        source = self.write_session(
+            total={**COUNTERS, "input_tokens": 140, "total_tokens": 170}, archived=True
+        )
+        self.compress(source)
+        source.unlink()
+        self.export()
+        self.assertEqual(self.snapshot()["coverage"]["partial"], 1)
+        self.assertEqual(self.snapshot()["coverage"]["complete"], 0)
+
+    def test_damaged_compressed_copy_cannot_verify_a_session(self):
+        source = self.write_session()
+        archive = self.compress(source)
+        archive.write_bytes(archive.read_bytes()[:-4])
+        self.export()
+        self.assertEqual(self.snapshot()["coverage"]["complete"], 0)
+        self.assertEqual(self.snapshot()["coverage"]["partial"], 1)
+
     def test_targeted_proof_does_not_overwrite_fleet_snapshot(self):
         self.write_session()
         self.write_session(LATER, archived=True)
